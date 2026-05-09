@@ -1,0 +1,4 @@
+address,current_status,consecutive_invalid_inferences,join_height,epochs_completed,scan_from_epoch,exclude_from_epoch_policy,first_seen_performance_epoch,last_seen_performance_epoch,last_paid_epoch,first_unpaid_epoch_after_last_paid,included_for_compensation
+gonka12av9up884t9lcsf70rs0l7jfmkmc8k9sxfuknt,INVALID,5,2847941,0,220,250,220,249,247,248,True
+gonka188c86f9mrlt4nlcg89f82nnfm9jzq9gtjafj50,INVALID,5,3677176,0,220,250,239,249,247,248,True
+gonka1dzdmx5ljrwkelrmgd7suv2q43epn293qacpgqn,INVALID,0,3773983,0,220,250,246,249,247,248,True
