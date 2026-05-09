@@ -22,9 +22,9 @@ DEFAULT_NODE_URL = "http://node1.gonka.ai:8000"
 DEFAULT_FROM_EPOCH = 245
 DEFAULT_TO_EPOCH = 255
 DEFAULT_OUTPUT = "checks/case-4-epoch-loss-audit-245-255/epoch_loss_audit_wide_245_255.csv"
-DEFAULT_CONFIRMATION_MINUS_EFFECTIVE_OUTPUT = (
+DEFAULT_CONFIRMATION_PLUS_POC_SLOT_MINUS_EFFECTIVE_OUTPUT = (
     "checks/case-4-epoch-loss-audit-245-255/"
-    "confirmation_minus_effective_reward_245_255.csv"
+    "confirmation_plus_poc_slot_minus_effective_reward_245_255.csv"
 )
 DEFAULT_CHAIN_DELTA_OUTPUT = (
     "checks/case-4-epoch-loss-audit-245-255/chain_expected_delta_245_255.csv"
@@ -547,6 +547,10 @@ def sum_decimal_strings(rows: list[dict[str, Any]], field: str) -> Decimal:
     return sum((Decimal(str(row[field])) for row in rows), Decimal(0))
 
 
+def blank_zero_decimal(value: Decimal) -> str:
+    return "" if value == 0 else str(value)
+
+
 def wide_rows(
     long_rows: list[dict[str, Any]],
     from_epoch: int,
@@ -678,15 +682,18 @@ def metric_wide_rows(
             if row is None:
                 wide[field] = ""
                 continue
-            value = value_by_row(row)
-            total += Decimal(str(value))
-            wide[field] = str(value)
-        wide[f"total_{metric_prefix}_gnk"] = str(total)
+            value = Decimal(str(value_by_row(row)))
+            total += value
+            wide[field] = blank_zero_decimal(value)
+        wide[f"total_{metric_prefix}_gnk"] = blank_zero_decimal(total)
         rows.append(wide)
 
     return sorted(
         rows,
-        key=lambda row: (Decimal(row[f"total_{metric_prefix}_gnk"]), row["address"]),
+        key=lambda row: (
+            Decimal(row[f"total_{metric_prefix}_gnk"] or "0"),
+            row["address"],
+        ),
         reverse=True,
     )
 
@@ -714,8 +721,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--large-loss-threshold", default=str(DEFAULT_LARGE_LOSS_THRESHOLD))
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument(
-        "--confirmation-minus-effective-output",
-        default=DEFAULT_CONFIRMATION_MINUS_EFFECTIVE_OUTPUT,
+        "--confirmation-plus-poc-slot-minus-effective-output",
+        default=DEFAULT_CONFIRMATION_PLUS_POC_SLOT_MINUS_EFFECTIVE_OUTPUT,
     )
     parser.add_argument("--chain-delta-output", default=DEFAULT_CHAIN_DELTA_OUTPUT)
     parser.add_argument(
@@ -732,17 +739,17 @@ def main() -> int:
     long_rows = calculate(args)
     rows = wide_rows(long_rows, args.from_epoch, args.to_epoch)
     write_csv(Path(args.output), rows)
-    confirmation_minus_effective_rows = metric_wide_rows(
+    confirmation_plus_poc_slot_minus_effective_rows = metric_wide_rows(
         long_rows,
         args.from_epoch,
         args.to_epoch,
-        "confirmation_minus_effective_reward",
-        lambda row: Decimal(str(row["expected_confirmation_weight_reward_gnk"]))
+        "confirmation_plus_poc_slot_minus_effective_reward",
+        lambda row: Decimal(str(row["expected_confirmation_plus_poc_slot_reward_gnk"]))
         - Decimal(str(row["expected_effective_reward_gnk"])),
     )
     write_csv(
-        Path(args.confirmation_minus_effective_output),
-        confirmation_minus_effective_rows,
+        Path(args.confirmation_plus_poc_slot_minus_effective_output),
+        confirmation_plus_poc_slot_minus_effective_rows,
     )
     chain_delta_rows = metric_wide_rows(
         long_rows,
@@ -758,7 +765,7 @@ def main() -> int:
     large_loss = sum(1 for row in long_rows if row["large_confirmation_loss"])
     mismatches = sum(1 for row in long_rows if not row["chain_reward_matches_actual"])
     print(f"wrote {args.output}")
-    print(f"wrote {args.confirmation_minus_effective_output}")
+    print(f"wrote {args.confirmation_plus_poc_slot_minus_effective_output}")
     print(f"wrote {args.chain_delta_output}")
     if args.long_output:
         print(f"wrote {args.long_output}")

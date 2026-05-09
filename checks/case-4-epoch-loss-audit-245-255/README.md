@@ -24,7 +24,7 @@ Default output:
 
 ```text
 epoch_loss_audit_wide_245_255.csv
-confirmation_minus_effective_reward_245_255.csv
+confirmation_plus_poc_slot_minus_effective_reward_245_255.csv
 chain_expected_delta_245_255.csv
 ```
 
@@ -42,14 +42,14 @@ python3 calculate_epoch_loss_audit.py --long-output epoch_loss_audit_245_255.csv
 Additional generated files:
 
 ```text
-confirmation_minus_effective_reward_245_255.csv
+confirmation_plus_poc_slot_minus_effective_reward_245_255.csv
 ```
 
 One participant per row. Epoch columns contain:
 
 ```text
-epoch_<N>_confirmation_minus_effective_reward_gnk =
-  epoch_<N>_expected_confirmation_weight_reward_gnk
+epoch_<N>_confirmation_plus_poc_slot_minus_effective_reward_gnk =
+  epoch_<N>_expected_confirmation_plus_poc_slot_reward_gnk
   - epoch_<N>_expected_effective_reward_gnk
 ```
 
