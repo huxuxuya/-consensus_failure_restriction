@@ -1,0 +1,14 @@
+{
+  "epoch": 248,
+  "effective_block_height": 3828723,
+  "historical_snapshot_available": true,
+  "historical_snapshot_error": "",
+  "participants_total": 95,
+  "participants_with_lost_inference_slot_weight": 0,
+  "total_lost_inference_slot_weight": 0,
+  "participants_with_positive_expected_lost_reward": 0,
+  "total_expected_lost_reward_ngnk": 0,
+  "total_expected_lost_reward_gnk": "0",
+  "participants_reward_mismatch_count": 0,
+  "global_reward_per_weight_coefficient": "213096451.48843334068560480114300387475679893073831071138164543835449580426717057"
+}
