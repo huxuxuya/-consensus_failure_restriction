@@ -25,7 +25,9 @@ DEFAULT_EXCLUDE_FROM_EPOCH = 250
 DEFAULT_OUTPUT = "artifacts/compensation_calculation.csv"
 DEFAULT_AFFECTED_OUTPUT = "artifacts/affected_participants.csv"
 DEFAULT_AUDIT_OUTPUT = "artifacts/paid_then_unpaid_audit.csv"
+DEFAULT_INVALID_STATUS_OUTPUT = "artifacts/invalid_status_by_epoch.csv"
 DEFAULT_CONFIRMATION_REWARD_FROM_EPOCH = 248
+INVALID_EXCLUSION_REASONS = {"consecutive_failures", "statistical_invalidations"}
 MAX_TABLE_N = 990
 P0_MULTIPLIERS = {
     50: (1, 20),
@@ -162,6 +164,27 @@ def load_excluded_addresses(
         retries=retries,
     )
     return {item["address"] for item in payload.get("items", []) if item.get("address")}
+
+
+def load_exclusion_reasons(
+    node_url: str,
+    epoch: int,
+    timeout: int,
+    retries: int,
+) -> dict[str, str]:
+    payload = fetch_json(
+        endpoint(
+            node_url,
+            f"/chain-api/productscience/inference/inference/excluded_participants/{epoch}",
+        ),
+        timeout=timeout,
+        retries=retries,
+    )
+    return {
+        item["address"]: item.get("reason", "excluded")
+        for item in payload.get("items", [])
+        if item.get("address")
+    }
 
 
 def load_epoch_performance(
@@ -584,6 +607,39 @@ def build_paid_then_unpaid_audit_rows(
     )
 
 
+def build_invalid_status_wide_rows(
+    participants: dict[str, dict[str, Any]],
+    performance_by_epoch: dict[int, dict[str, dict[str, Any]]],
+    exclusion_reasons_by_epoch: dict[int, dict[str, str]],
+    scan_from_epoch: int,
+    exclude_from_epoch: int,
+) -> list[dict[str, Any]]:
+    addresses = sorted(
+        {
+            address
+            for by_address in performance_by_epoch.values()
+            for address in by_address.keys()
+        }
+    )
+    rows: list[dict[str, Any]] = []
+
+    for address in addresses:
+        wide: dict[str, Any] = {
+            "address": address,
+            "current_status": participants.get(address, {}).get("status", ""),
+        }
+        has_invalid_epoch = False
+        for epoch in range(scan_from_epoch, exclude_from_epoch):
+            reason = exclusion_reasons_by_epoch.get(epoch, {}).get(address, "")
+            value = "INVALID" if reason in INVALID_EXCLUSION_REASONS else ""
+            has_invalid_epoch = has_invalid_epoch or bool(value)
+            wide[f"epoch_{epoch}"] = value
+
+        rows.append(wide)
+
+    return rows
+
+
 def calculate_reward_rate(
     fixed_epoch_reward: int,
     total_epoch_weight: int,
@@ -694,6 +750,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument("--affected-output", default=DEFAULT_AFFECTED_OUTPUT)
     parser.add_argument("--audit-output", default=DEFAULT_AUDIT_OUTPUT)
+    parser.add_argument("--invalid-status-output", default=DEFAULT_INVALID_STATUS_OUTPUT)
     parser.add_argument(
         "--confirmation-reward-from-epoch",
         type=int,
@@ -748,11 +805,12 @@ def main() -> int:
     )
 
     print(
-        "stage 2/4: fetching epoch performance summaries "
+        "stage 2/4: fetching epoch performance summaries and exclusions "
         f"{args.scan_from_epoch}-{args.exclude_from_epoch - 1}",
         flush=True,
     )
     performance_by_epoch: dict[int, dict[str, dict[str, Any]]] = {}
+    exclusion_reasons_by_epoch: dict[int, dict[str, str]] = {}
     for epoch in range(args.scan_from_epoch, args.exclude_from_epoch):
         performance = load_epoch_performance(
             args.node_url,
@@ -761,6 +819,12 @@ def main() -> int:
             retries=args.retries,
         )
         performance_by_epoch[epoch] = performance_map(performance)
+        exclusion_reasons_by_epoch[epoch] = load_exclusion_reasons(
+            args.node_url,
+            epoch,
+            timeout=args.timeout,
+            retries=args.retries,
+        )
 
     affected_rows = build_affected_rows(
         addresses=addresses,
@@ -775,10 +839,19 @@ def main() -> int:
         scan_from_epoch=args.scan_from_epoch,
         exclude_from_epoch=args.exclude_from_epoch,
     )
+    invalid_status_rows = build_invalid_status_wide_rows(
+        participants=participants_by_address,
+        performance_by_epoch=performance_by_epoch,
+        exclusion_reasons_by_epoch=exclusion_reasons_by_epoch,
+        scan_from_epoch=args.scan_from_epoch,
+        exclude_from_epoch=args.exclude_from_epoch,
+    )
     write_csv(Path(args.affected_output), affected_rows)
     write_csv(Path(args.audit_output), audit_rows)
+    write_csv(Path(args.invalid_status_output), invalid_status_rows)
     print(f"stage 2/4: wrote discovery CSV: {args.affected_output}", flush=True)
     print(f"stage 2/4: wrote broad audit CSV: {args.audit_output}", flush=True)
+    print(f"stage 2/4: wrote invalid status CSV: {args.invalid_status_output}", flush=True)
 
     lost_epochs = sorted(
         {
@@ -866,9 +939,11 @@ def main() -> int:
     total = sum(to_int(row["compensation_base_units"]) for row in compensation_rows)
     print(f"wrote {args.affected_output}", flush=True)
     print(f"wrote {args.audit_output}", flush=True)
+    print(f"wrote {args.invalid_status_output}", flush=True)
     print(f"wrote {args.output}", flush=True)
     print(f"affected_candidates: {len(affected_rows)}", flush=True)
     print(f"paid_then_unpaid_audit_rows: {len(audit_rows)}", flush=True)
+    print(f"invalid_status_rows: {len(invalid_status_rows)}", flush=True)
     print(f"compensation_rows: {len(compensation_rows)}", flush=True)
     print(f"total_compensation_base_units: {total}", flush=True)
     print(

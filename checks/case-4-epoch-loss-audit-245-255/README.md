@@ -26,6 +26,8 @@ Default output:
 epoch_loss_audit_wide_245_255.csv
 confirmation_plus_poc_slot_minus_effective_reward_245_255.csv
 chain_expected_delta_245_255.csv
+inference_slot_weight_245_255.csv
+preserved_event_weight_245_255.csv
 ```
 
 The default CSV has one participant per row. Epoch data is stored in repeated
@@ -64,6 +66,49 @@ epoch_<N>_chain_expected_delta_gnk =
   epoch_<N>_expected_effective_reward_gnk
   - epoch_<N>_actual_reward_gnk
 ```
+
+```text
+inference_slot_weight_245_255.csv
+```
+
+One participant per row. Epoch columns contain the participant's legacy
+POC_SLOT / inference-slot weight:
+
+```text
+epoch_<N>_inference_slot_weight
+```
+
+Zero values are written as empty cells.
+
+```text
+preserved_event_weight_245_255.csv
+```
+
+One participant per row. For epochs after the confirmation-reward switch, the
+old `timeslot_allocation[1]` marker is no longer the source of truth for
+inference-serving weight. This compact table contains only weight columns:
+
+```text
+epoch_245_poc_slot_allocation_weight
+epoch_246_poc_slot_allocation_weight
+epoch_247_poc_slot_allocation_weight
+epoch_248_poc_slot_allocation_weight
+epoch_<N>_event_<K>_preserved_weight
+total_preserved_event_weight
+```
+
+For `245-248`, weight is read from legacy `timeslot_allocation[1]`.
+For `249+`, the script reads historical `PreservedNodesSnapshot` for every
+confirmation PoC event and creates event-level columns:
+
+```text
+epoch_<N>_event_<K>_preserved_weight
+```
+
+The preserved weight is calculated from the event snapshot's preserved
+`node_id` list, the epoch model-group MLNode `poc_weight`, and the model weight
+coefficient. Empty cells mean the participant had no preserved nodes in that
+event.
 
 ## Columns
 

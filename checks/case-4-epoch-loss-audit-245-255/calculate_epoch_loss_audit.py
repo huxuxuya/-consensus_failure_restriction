@@ -29,6 +29,12 @@ DEFAULT_CONFIRMATION_PLUS_POC_SLOT_MINUS_EFFECTIVE_OUTPUT = (
 DEFAULT_CHAIN_DELTA_OUTPUT = (
     "checks/case-4-epoch-loss-audit-245-255/chain_expected_delta_245_255.csv"
 )
+DEFAULT_INFERENCE_SLOT_WEIGHT_OUTPUT = (
+    "checks/case-4-epoch-loss-audit-245-255/inference_slot_weight_245_255.csv"
+)
+DEFAULT_PRESERVED_EVENT_WEIGHT_OUTPUT = (
+    "checks/case-4-epoch-loss-audit-245-255/preserved_event_weight_245_255.csv"
+)
 DEFAULT_LARGE_LOSS_THRESHOLD = Decimal("0.5")
 DEFAULT_CONFIRMATION_REWARD_FROM_EPOCH = 248
 MAX_TABLE_N = 990
@@ -48,11 +54,19 @@ DECAY_EXPONENTS = {
 }
 
 
-def fetch_json(url: str, timeout: int, retries: int) -> dict[str, Any]:
+def fetch_json(
+    url: str,
+    timeout: int,
+    retries: int,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            request = urllib.request.Request(url, headers={"Accept": "application/json"})
+            request_headers = {"Accept": "application/json"}
+            if headers:
+                request_headers.update(headers)
+            request = urllib.request.Request(url, headers=request_headers)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
@@ -64,6 +78,21 @@ def fetch_json(url: str, timeout: int, retries: int) -> dict[str, Any]:
 
 def endpoint(node_url: str, path: str) -> str:
     return node_url.rstrip("/") + path
+
+
+def fetch_historical_json(
+    node_url: str,
+    path: str,
+    block_height: int,
+    timeout: int,
+    retries: int,
+) -> dict[str, Any]:
+    return fetch_json(
+        endpoint(node_url, path),
+        timeout=timeout,
+        retries=retries,
+        headers={"x-cosmos-block-height": str(block_height)},
+    )
 
 
 def fetch_paginated(
@@ -129,6 +158,49 @@ def preserved_poc_weight(validation_weight: dict[str, Any]) -> int:
         if len(slots) > 1 and bool(slots[1]):
             total += to_int(node.get("poc_weight"))
     return total
+
+
+def preserved_node_sets(snapshot: dict[str, Any]) -> dict[str, dict[str, set[str]]]:
+    by_model: dict[str, dict[str, set[str]]] = {}
+    for model_nodes in snapshot.get("model_preserved_nodes", []) or []:
+        model_id = model_nodes.get("model_id", "")
+        participants = by_model.setdefault(model_id, {})
+        for participant in model_nodes.get("participants", []) or []:
+            participant_id = participant.get("participant_id")
+            if not participant_id:
+                continue
+            participants[participant_id] = set(participant.get("node_ids", []) or [])
+    return by_model
+
+
+def preserved_weights_from_snapshot(
+    snapshot: dict[str, Any],
+    model_groups: list[dict[str, Any]],
+    coefficients: dict[str, Decimal],
+) -> dict[str, int]:
+    node_sets = preserved_node_sets(snapshot)
+    weights: dict[str, int] = {}
+    for group in model_groups:
+        model_id = group.get("model_id", "")
+        model_node_sets = node_sets.get(model_id, {})
+        if not model_node_sets:
+            continue
+        coefficient = coefficients.get(model_id, Decimal(1))
+        for vw in group.get("validation_weights", []):
+            address = vw.get("member_address")
+            preserved_ids = model_node_sets.get(address, set())
+            if not address or not preserved_ids:
+                continue
+            raw_weight = 0
+            for node in vw.get("ml_nodes", []) or []:
+                node_id = node.get("node_id") or node.get("nodeId")
+                if node_id in preserved_ids:
+                    raw_weight += to_int(node.get("poc_weight"))
+            if raw_weight:
+                weights[address] = weights.get(address, 0) + decimal_floor(
+                    Decimal(raw_weight) * coefficient
+                )
+    return weights
 
 
 def raw_ml_node_weight(validation_weight: dict[str, Any]) -> int:
@@ -342,6 +414,61 @@ def load_exclusion_reasons(args: argparse.Namespace, epoch: int) -> dict[str, st
     }
 
 
+def load_confirmation_poc_events(args: argparse.Namespace, epoch: int) -> list[dict[str, Any]]:
+    payload = fetch_json(
+        endpoint(
+            args.node_url,
+            f"/chain-api/productscience/inference/inference/confirmation_poc_events/{epoch}",
+        ),
+        timeout=args.timeout,
+        retries=args.retries,
+    )
+    return sorted(
+        payload.get("events", []) or [],
+        key=lambda event: to_int(event.get("event_sequence")),
+    )
+
+
+def load_preserved_event_weights(
+    args: argparse.Namespace,
+    epoch: int,
+    model_groups: list[dict[str, Any]],
+    coefficients: dict[str, Decimal],
+) -> list[dict[str, Any]]:
+    event_weights: list[dict[str, Any]] = []
+    for event in load_confirmation_poc_events(args, epoch):
+        generation_start_height = to_int(event.get("generation_start_height"))
+        trigger_height = to_int(event.get("trigger_height"))
+        snapshot_height = generation_start_height or trigger_height
+        if snapshot_height <= 0:
+            continue
+        payload = fetch_historical_json(
+            args.node_url,
+            "/chain-api/productscience/inference/inference/preserved_nodes_snapshot",
+            snapshot_height,
+            timeout=args.timeout,
+            retries=args.retries,
+        )
+        if not payload.get("found"):
+            continue
+        snapshot = payload.get("snapshot") or {}
+        event_weights.append(
+            {
+                "epoch": epoch,
+                "event_sequence": to_int(event.get("event_sequence")),
+                "trigger_height": trigger_height,
+                "generation_start_height": generation_start_height,
+                "episode_anchor_height": to_int(snapshot.get("episode_anchor_height")),
+                "weights": preserved_weights_from_snapshot(
+                    snapshot,
+                    model_groups,
+                    coefficients,
+                ),
+            }
+        )
+    return event_weights
+
+
 def zero_reward_reason(
     address: str,
     weight: int,
@@ -543,6 +670,99 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
     )
 
 
+def preserved_event_weight_wide_rows(
+    args: argparse.Namespace,
+    base_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    params = fetch_json(
+        endpoint(args.node_url, "/chain-api/productscience/inference/inference/params"),
+        timeout=args.timeout,
+        retries=args.retries,
+    )["params"]
+    coefficients = model_coefficients(params)
+    groups_by_epoch = load_epoch_groups_by_epoch(args)
+    event_weights_by_epoch: dict[int, list[dict[str, Any]]] = {}
+    addresses: set[str] = set()
+    legacy_weights: dict[str, dict[int, int]] = {}
+    if base_rows is not None:
+        for row in base_rows:
+            address = row["address"]
+            addresses.add(address)
+            epoch = int(row["epoch"])
+            if epoch <= args.confirmation_reward_from_epoch:
+                weight = int(row["poc_slot_weight"])
+                if weight:
+                    legacy_weights.setdefault(address, {})[epoch] = weight
+
+    event_from_epoch = max(args.from_epoch, args.confirmation_reward_from_epoch + 1)
+    for epoch in range(event_from_epoch, args.to_epoch + 1):
+        model_groups = [
+            group
+            for group in groups_by_epoch.get(epoch, [])
+            if group.get("model_id", "") != ""
+        ]
+        if not model_groups:
+            continue
+        event_weights = load_preserved_event_weights(
+            args,
+            epoch,
+            model_groups,
+            coefficients,
+        )
+        event_weights_by_epoch[epoch] = event_weights
+        for event in event_weights:
+            addresses.update(event["weights"])
+
+    rows: list[dict[str, Any]] = []
+    for address in sorted(addresses):
+        row: dict[str, Any] = {"address": address}
+        total = 0
+        for epoch in range(args.from_epoch, args.to_epoch + 1):
+            for index, event in enumerate(event_weights_by_epoch.get(epoch, []), start=1):
+                row[f"epoch_{epoch}_event_{index}_sequence"] = event["event_sequence"]
+                row[f"epoch_{epoch}_event_{index}_trigger_height"] = event["trigger_height"]
+                row[f"epoch_{epoch}_event_{index}_generation_start_height"] = event[
+                    "generation_start_height"
+                ]
+                row[f"epoch_{epoch}_event_{index}_episode_anchor_height"] = event[
+                    "episode_anchor_height"
+                ]
+                weight = int(event["weights"].get(address, 0))
+                total += weight
+                row[f"epoch_{epoch}_event_{index}_preserved_weight"] = (
+                    "" if weight == 0 else weight
+                )
+        row["total_preserved_event_weight"] = "" if total == 0 else total
+        rows.append(row)
+
+    if not rows:
+        return [{"address": "", "total_preserved_event_weight": ""}]
+
+    field_order = ["address"]
+    for epoch in range(args.from_epoch, args.to_epoch + 1):
+        if epoch <= args.confirmation_reward_from_epoch:
+            field_order.append(f"epoch_{epoch}_poc_slot_allocation_weight")
+            continue
+        for index, _event in enumerate(event_weights_by_epoch.get(epoch, []), start=1):
+            field_order.append(f"epoch_{epoch}_event_{index}_preserved_weight")
+    field_order.append("total_preserved_event_weight")
+
+    for row in rows:
+        address = row["address"]
+        for epoch in range(args.from_epoch, min(args.to_epoch, args.confirmation_reward_from_epoch) + 1):
+            weight = legacy_weights.get(address, {}).get(epoch, 0)
+            row[f"epoch_{epoch}_poc_slot_allocation_weight"] = "" if weight == 0 else weight
+            if weight:
+                row["total_preserved_event_weight"] = int(row["total_preserved_event_weight"] or 0) + weight
+
+    ordered_rows = [{field: row.get(field, "") for field in field_order} for row in rows]
+    return sorted(
+        ordered_rows,
+        key=lambda row: (int(row["total_preserved_event_weight"] or 0), row["address"]),
+        reverse=True,
+    )
+
+
 def sum_decimal_strings(rows: list[dict[str, Any]], field: str) -> Decimal:
     return sum((Decimal(str(row[field])) for row in rows), Decimal(0))
 
@@ -698,6 +918,40 @@ def metric_wide_rows(
     )
 
 
+def weight_wide_rows(
+    long_rows: list[dict[str, Any]],
+    from_epoch: int,
+    to_epoch: int,
+    metric_prefix: str,
+    value_by_row: Any,
+) -> list[dict[str, Any]]:
+    by_address: dict[str, dict[int, dict[str, Any]]] = {}
+    for row in long_rows:
+        by_address.setdefault(row["address"], {})[int(row["epoch"])] = row
+
+    rows: list[dict[str, Any]] = []
+    for address, by_epoch in by_address.items():
+        wide: dict[str, Any] = {"address": address}
+        total = 0
+        for epoch in range(from_epoch, to_epoch + 1):
+            row = by_epoch.get(epoch)
+            field = f"epoch_{epoch}_{metric_prefix}"
+            if row is None:
+                wide[field] = ""
+                continue
+            value = int(value_by_row(row))
+            total += value
+            wide[field] = "" if value == 0 else value
+        wide[f"total_{metric_prefix}"] = "" if total == 0 else total
+        rows.append(wide)
+
+    return sorted(
+        rows,
+        key=lambda row: (int(row[f"total_{metric_prefix}"] or 0), row["address"]),
+        reverse=True,
+    )
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
@@ -725,6 +979,14 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_CONFIRMATION_PLUS_POC_SLOT_MINUS_EFFECTIVE_OUTPUT,
     )
     parser.add_argument("--chain-delta-output", default=DEFAULT_CHAIN_DELTA_OUTPUT)
+    parser.add_argument(
+        "--inference-slot-weight-output",
+        default=DEFAULT_INFERENCE_SLOT_WEIGHT_OUTPUT,
+    )
+    parser.add_argument(
+        "--preserved-event-weight-output",
+        default=DEFAULT_PRESERVED_EVENT_WEIGHT_OUTPUT,
+    )
     parser.add_argument(
         "--long-output",
         help="optional path for the detailed participant-epoch table",
@@ -759,6 +1021,16 @@ def main() -> int:
         lambda row: Decimal(str(row["chain_expected_delta_gnk"])),
     )
     write_csv(Path(args.chain_delta_output), chain_delta_rows)
+    inference_slot_weight_rows = weight_wide_rows(
+        long_rows,
+        args.from_epoch,
+        args.to_epoch,
+        "inference_slot_weight",
+        lambda row: row["poc_slot_weight"],
+    )
+    write_csv(Path(args.inference_slot_weight_output), inference_slot_weight_rows)
+    preserved_event_weight_rows = preserved_event_weight_wide_rows(args, long_rows)
+    write_csv(Path(args.preserved_event_weight_output), preserved_event_weight_rows)
     if args.long_output:
         write_csv(Path(args.long_output), long_rows)
     zero_paid = sum(1 for row in long_rows if row["zero_paid_with_positive_expected"])
@@ -767,6 +1039,8 @@ def main() -> int:
     print(f"wrote {args.output}")
     print(f"wrote {args.confirmation_plus_poc_slot_minus_effective_output}")
     print(f"wrote {args.chain_delta_output}")
+    print(f"wrote {args.inference_slot_weight_output}")
+    print(f"wrote {args.preserved_event_weight_output}")
     if args.long_output:
         print(f"wrote {args.long_output}")
     print(f"participant rows: {len(rows)}")
