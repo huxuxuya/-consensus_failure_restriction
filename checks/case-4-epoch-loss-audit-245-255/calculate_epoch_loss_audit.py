@@ -655,22 +655,12 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
             weight = max(0, to_int(vw.get("weight")))
             stuck_weight_delta = stuck_weight_deltas.get(epoch, {}).get(address, 0)
             confirmation_weight = max(0, to_int(vw.get("confirmation_weight")))
-            full_weight_with_035_bug_fix = weight + stuck_weight_delta
-            weight_with_035_bug_fix = min(
-                full_weight_with_035_bug_fix,
-                confirmation_weight + stuck_weight_delta,
-            )
             effective_weight = chain_effective_weights.get(address, 0)
             actual_reward = to_int(
                 performance_by_address.get(address, {}).get("rewarded_coins")
             )
             expected_full = decimal_floor(
                 Decimal(weight)
-                * Decimal(fixed_epoch_reward)
-                / Decimal(total_epoch_weight)
-            )
-            expected_035_bug_fix_weight = decimal_floor(
-                Decimal(weight_with_035_bug_fix)
                 * Decimal(fixed_epoch_reward)
                 / Decimal(total_epoch_weight)
             )
@@ -681,6 +671,23 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
                 / Decimal(total_epoch_weight)
             )
             poc_slot_weight = preserved_by_address.get(address, 0)
+            if epoch < args.stuck_weight_from_epoch:
+                full_weight_with_035_bug_fix = weight
+                weight_with_035_bug_fix = min(
+                    full_weight_with_035_bug_fix,
+                    confirmation_weight + poc_slot_weight,
+                )
+            else:
+                full_weight_with_035_bug_fix = weight + stuck_weight_delta
+                weight_with_035_bug_fix = min(
+                    full_weight_with_035_bug_fix,
+                    confirmation_weight + stuck_weight_delta,
+                )
+            expected_035_bug_fix_weight = decimal_floor(
+                Decimal(weight_with_035_bug_fix)
+                * Decimal(fixed_epoch_reward)
+                / Decimal(total_epoch_weight)
+            )
             confirmation_plus_poc_slot_weight = min(
                 weight,
                 confirmation_weight + poc_slot_weight,
