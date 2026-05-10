@@ -29,6 +29,9 @@ DEFAULT_CONFIRMATION_PLUS_POC_SLOT_MINUS_EFFECTIVE_OUTPUT = (
 DEFAULT_CHAIN_DELTA_OUTPUT = (
     "checks/case-4-epoch-loss-audit-245-255/chain_expected_delta_245_255.csv"
 )
+DEFAULT_035_BUG_FIX_DELTA_OUTPUT = (
+    "checks/case-4-epoch-loss-audit-245-255/035_bug_fix_expected_minus_actual_245_255.csv"
+)
 DEFAULT_INFERENCE_SLOT_WEIGHT_OUTPUT = (
     "checks/case-4-epoch-loss-audit-245-255/inference_slot_weight_245_255.csv"
 )
@@ -37,6 +40,8 @@ DEFAULT_PRESERVED_EVENT_WEIGHT_OUTPUT = (
 )
 DEFAULT_LARGE_LOSS_THRESHOLD = Decimal("0.5")
 DEFAULT_CONFIRMATION_REWARD_FROM_EPOCH = 248
+DEFAULT_STUCK_WEIGHT_BASELINE_EPOCH = 248
+DEFAULT_STUCK_WEIGHT_FROM_EPOCH = 249
 MAX_TABLE_N = 990
 P0_MULTIPLIERS = {
     50: (1, 20),
@@ -224,6 +229,72 @@ def coefficient_adjusted_weight(
 ) -> int:
     coefficient = coefficients.get(model_id, Decimal(1))
     return decimal_floor(Decimal(raw_ml_node_weight(validation_weight)) * coefficient)
+
+
+def node_adjusted_weight(
+    node: dict[str, Any],
+    model_id: str,
+    coefficients: dict[str, Decimal],
+) -> int:
+    coefficient = coefficients.get(model_id, Decimal(1))
+    return decimal_floor(Decimal(to_int(node.get("poc_weight"))) * coefficient)
+
+
+def build_stuck_weight_deltas(
+    groups_by_epoch: dict[int, list[dict[str, Any]]],
+    coefficients: dict[str, Decimal],
+    baseline_epoch: int,
+    affected_from_epoch: int,
+    to_epoch: int,
+) -> dict[int, dict[str, int]]:
+    """Return root-weight deltas for stale pre-v0.2.12 preserved node weights.
+
+    The migration bug kept already-scaled PoC weights in MLNodeInfo.PocWeight.
+    Post-v0.2.12 aggregation applied the model coefficient again, so a stuck
+    node contributed coefficient * stored_weight instead of stored_weight.
+    """
+    baseline_nodes: dict[tuple[str, str, str], int] = {}
+    for group in groups_by_epoch.get(baseline_epoch, []):
+        model_id = group.get("model_id", "")
+        if not model_id:
+            continue
+        for vw in group.get("validation_weights", []):
+            address = vw.get("member_address")
+            if not address:
+                continue
+            for node in vw.get("ml_nodes", []) or []:
+                node_id = node.get("node_id") or node.get("nodeId")
+                baseline_weight = to_int(node.get("poc_weight"))
+                if node_id and baseline_weight > 0:
+                    baseline_nodes[(model_id, address, node_id)] = baseline_weight
+
+    deltas_by_epoch: dict[int, dict[str, int]] = {}
+    for epoch in range(affected_from_epoch, to_epoch + 1):
+        for group in groups_by_epoch.get(epoch, []):
+            model_id = group.get("model_id", "")
+            if not model_id:
+                continue
+            for vw in group.get("validation_weights", []):
+                address = vw.get("member_address")
+                if not address:
+                    continue
+                for node in vw.get("ml_nodes", []) or []:
+                    node_id = node.get("node_id") or node.get("nodeId")
+                    if not node_id:
+                        continue
+                    baseline_weight = baseline_nodes.get((model_id, address, node_id))
+                    if not baseline_weight:
+                        continue
+                    current_weight = to_int(node.get("poc_weight"))
+                    ratio = Decimal(current_weight) / Decimal(baseline_weight)
+                    if Decimal("0.95") <= ratio <= Decimal("1.10"):
+                        actual_adjusted = node_adjusted_weight(node, model_id, coefficients)
+                        delta = max(0, current_weight - actual_adjusted)
+                        if delta:
+                            epoch_deltas = deltas_by_epoch.setdefault(epoch, {})
+                            epoch_deltas[address] = epoch_deltas.get(address, 0) + delta
+
+    return deltas_by_epoch
 
 
 def ceil_supported_p0_permille(target: int) -> int:
@@ -516,6 +587,13 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
     )["params"]
     coefficients = model_coefficients(params)
     groups_by_epoch = load_epoch_groups_by_epoch(args)
+    stuck_weight_deltas = build_stuck_weight_deltas(
+        groups_by_epoch,
+        coefficients,
+        baseline_epoch=args.stuck_weight_baseline_epoch,
+        affected_from_epoch=args.stuck_weight_from_epoch,
+        to_epoch=args.to_epoch,
+    )
     rows: list[dict[str, Any]] = []
     large_loss_threshold = Decimal(str(args.large_loss_threshold))
     validation_params = params.get("validation_params", {})
@@ -575,6 +653,8 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
         for vw in root_group.get("validation_weights", []):
             address = vw["member_address"]
             weight = max(0, to_int(vw.get("weight")))
+            stuck_weight_delta = stuck_weight_deltas.get(epoch, {}).get(address, 0)
+            weight_with_035_bug_fix = weight + stuck_weight_delta
             confirmation_weight = max(0, to_int(vw.get("confirmation_weight")))
             effective_weight = chain_effective_weights.get(address, 0)
             actual_reward = to_int(
@@ -582,6 +662,11 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
             )
             expected_full = decimal_floor(
                 Decimal(weight)
+                * Decimal(fixed_epoch_reward)
+                / Decimal(total_epoch_weight)
+            )
+            expected_035_bug_fix_weight = decimal_floor(
+                Decimal(weight_with_035_bug_fix)
                 * Decimal(fixed_epoch_reward)
                 / Decimal(total_epoch_weight)
             )
@@ -616,6 +701,8 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
                     "epoch": epoch,
                     "address": address,
                     "weight": weight,
+                    "stuck_035_weight_delta": stuck_weight_delta,
+                    "weight_with_035_bug_fix": weight_with_035_bug_fix,
                     "confirmation_weight": confirmation_weight,
                     "effective_weight": effective_weight,
                     "poc_slot_weight": poc_slot_weight,
@@ -625,6 +712,9 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
                     "total_epoch_weight": total_epoch_weight,
                     "actual_reward_gnk": to_gnk(actual_reward),
                     "expected_full_weight_reward_gnk": to_gnk(expected_full),
+                    "expected_035_bug_fix_weight_reward_gnk": to_gnk(
+                        expected_035_bug_fix_weight
+                    ),
                     "expected_confirmation_weight_reward_gnk": to_gnk(
                         expected_confirmation_weight
                     ),
@@ -809,12 +899,15 @@ def wide_rows(
                 wide.update(
                     {
                         f"{prefix}_weight": "",
+                        f"{prefix}_stuck_035_weight_delta": "",
+                        f"{prefix}_weight_with_035_bug_fix": "",
                         f"{prefix}_confirmation_weight": "",
                         f"{prefix}_effective_weight": "",
                         f"{prefix}_poc_slot_weight": "",
                         f"{prefix}_excluded": "",
                         f"{prefix}_actual_reward_gnk": "",
                         f"{prefix}_expected_full_weight_reward_gnk": "",
+                        f"{prefix}_expected_035_bug_fix_weight_reward_gnk": "",
                         f"{prefix}_expected_confirmation_weight_reward_gnk": "",
                         f"{prefix}_expected_confirmation_plus_poc_slot_reward_gnk": "",
                         f"{prefix}_expected_effective_reward_gnk": "",
@@ -832,6 +925,10 @@ def wide_rows(
             wide.update(
                 {
                     f"{prefix}_weight": row["weight"],
+                    f"{prefix}_stuck_035_weight_delta": row["stuck_035_weight_delta"],
+                    f"{prefix}_weight_with_035_bug_fix": row[
+                        "weight_with_035_bug_fix"
+                    ],
                     f"{prefix}_confirmation_weight": row["confirmation_weight"],
                     f"{prefix}_effective_weight": row["effective_weight"],
                     f"{prefix}_poc_slot_weight": row["poc_slot_weight"],
@@ -839,6 +936,9 @@ def wide_rows(
                     f"{prefix}_actual_reward_gnk": row["actual_reward_gnk"],
                     f"{prefix}_expected_full_weight_reward_gnk": row[
                         "expected_full_weight_reward_gnk"
+                    ],
+                    f"{prefix}_expected_035_bug_fix_weight_reward_gnk": row[
+                        "expected_035_bug_fix_weight_reward_gnk"
                     ],
                     f"{prefix}_expected_confirmation_weight_reward_gnk": row[
                         "expected_confirmation_weight_reward_gnk"
@@ -972,6 +1072,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_CONFIRMATION_REWARD_FROM_EPOCH,
     )
+    parser.add_argument(
+        "--stuck-weight-baseline-epoch",
+        type=int,
+        default=DEFAULT_STUCK_WEIGHT_BASELINE_EPOCH,
+    )
+    parser.add_argument(
+        "--stuck-weight-from-epoch",
+        type=int,
+        default=DEFAULT_STUCK_WEIGHT_FROM_EPOCH,
+    )
     parser.add_argument("--large-loss-threshold", default=str(DEFAULT_LARGE_LOSS_THRESHOLD))
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument(
@@ -979,6 +1089,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_CONFIRMATION_PLUS_POC_SLOT_MINUS_EFFECTIVE_OUTPUT,
     )
     parser.add_argument("--chain-delta-output", default=DEFAULT_CHAIN_DELTA_OUTPUT)
+    parser.add_argument(
+        "--035-bug-fix-delta-output",
+        dest="bug_fix_035_delta_output",
+        default=DEFAULT_035_BUG_FIX_DELTA_OUTPUT,
+    )
     parser.add_argument(
         "--inference-slot-weight-output",
         default=DEFAULT_INFERENCE_SLOT_WEIGHT_OUTPUT,
@@ -1021,6 +1136,15 @@ def main() -> int:
         lambda row: Decimal(str(row["chain_expected_delta_gnk"])),
     )
     write_csv(Path(args.chain_delta_output), chain_delta_rows)
+    bug_fix_delta_rows = metric_wide_rows(
+        long_rows,
+        args.from_epoch,
+        args.to_epoch,
+        "035_bug_fix_expected_minus_actual",
+        lambda row: Decimal(str(row["expected_035_bug_fix_weight_reward_gnk"]))
+        - Decimal(str(row["actual_reward_gnk"])),
+    )
+    write_csv(Path(args.bug_fix_035_delta_output), bug_fix_delta_rows)
     inference_slot_weight_rows = weight_wide_rows(
         long_rows,
         args.from_epoch,
@@ -1039,6 +1163,7 @@ def main() -> int:
     print(f"wrote {args.output}")
     print(f"wrote {args.confirmation_plus_poc_slot_minus_effective_output}")
     print(f"wrote {args.chain_delta_output}")
+    print(f"wrote {args.bug_fix_035_delta_output}")
     print(f"wrote {args.inference_slot_weight_output}")
     print(f"wrote {args.preserved_event_weight_output}")
     if args.long_output:

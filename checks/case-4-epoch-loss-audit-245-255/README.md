@@ -26,6 +26,7 @@ Default output:
 epoch_loss_audit_wide_245_255.csv
 confirmation_plus_poc_slot_minus_effective_reward_245_255.csv
 chain_expected_delta_245_255.csv
+035_bug_fix_expected_minus_actual_245_255.csv
 inference_slot_weight_245_255.csv
 preserved_event_weight_245_255.csv
 ```
@@ -66,6 +67,20 @@ epoch_<N>_chain_expected_delta_gnk =
   epoch_<N>_expected_effective_reward_gnk
   - epoch_<N>_actual_reward_gnk
 ```
+
+```text
+035_bug_fix_expected_minus_actual_245_255.csv
+```
+
+One participant per row. Epoch columns contain:
+
+```text
+epoch_<N>_035_bug_fix_expected_minus_actual_gnk =
+  epoch_<N>_expected_035_bug_fix_weight_reward_gnk
+  - epoch_<N>_actual_reward_gnk
+```
+
+Zero values are written as empty cells.
 
 ```text
 inference_slot_weight_245_255.csv
@@ -121,12 +136,15 @@ total_lost_due_to_confirmation_weight_gnk
 epochs_with_zero_paid_positive_expected
 epochs_with_large_confirmation_loss
 epoch_<N>_weight
+epoch_<N>_stuck_035_weight_delta
+epoch_<N>_weight_with_035_bug_fix
 epoch_<N>_confirmation_weight
 epoch_<N>_effective_weight
 epoch_<N>_poc_slot_weight
 epoch_<N>_excluded
 epoch_<N>_actual_reward_gnk
 epoch_<N>_expected_full_weight_reward_gnk
+epoch_<N>_expected_035_bug_fix_weight_reward_gnk
 epoch_<N>_expected_confirmation_weight_reward_gnk
 epoch_<N>_expected_confirmation_plus_poc_slot_reward_gnk
 epoch_<N>_expected_effective_reward_gnk
@@ -142,6 +160,31 @@ epoch_<N>_large_confirmation_loss
 `bitcoin_rewards.go`: active/excluded eligibility, confirmation effective
 weight, coefficient-adjusted MLNode scaling, power capping, downtime punishment,
 and fixed epoch reward divided by total full epoch weight.
+
+`weight_with_035_bug_fix` is diagnostic. It starts from the observed root
+settlement `weight` and adds back the detected v0.2.12 stale-preserved-node
+delta:
+
+```text
+stuck_035_weight_delta = stored_node_poc_weight - floor(stored_node_poc_weight * model_weight_scale_factor)
+weight_with_035_bug_fix = weight + stuck_035_weight_delta
+```
+
+Detection uses epoch `248` as the baseline and marks post-upgrade node weights
+as stuck when the same `(model_id, participant, node_id)` remains within
+`0.95x-1.10x` of the baseline in epochs `249+`. This column does not by itself
+mean compensation is owed; reward eligibility, exclusions, downtime punishment,
+power capping, and already-paid rewards still need to be applied.
+
+`expected_035_bug_fix_weight_reward_gnk` is the same diagnostic view converted
+to reward units:
+
+```text
+floor(weight_with_035_bug_fix * fixed_epoch_reward / total_epoch_weight)
+```
+
+It uses the observed epoch denominator. It is not a final net compensation
+amount.
 
 `expected_confirmation_weight_reward_gnk` is the simple confirmation-weight
 view:
