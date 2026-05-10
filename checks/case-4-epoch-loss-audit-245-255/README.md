@@ -161,13 +161,14 @@ epoch_<N>_large_confirmation_loss
 weight, coefficient-adjusted MLNode scaling, power capping, downtime punishment,
 and fixed epoch reward divided by total full epoch weight.
 
-`weight_with_035_bug_fix` is diagnostic. It starts from the observed root
-settlement `weight` and adds back the detected v0.2.12 stale-preserved-node
-delta:
+`weight_with_035_bug_fix` is diagnostic and confirmation-aware. It starts from
+the observed root settlement `confirmation_weight` and adds back the detected
+v0.2.12 stale-preserved-node delta, capped by the corrected full weight:
 
 ```text
 stuck_035_weight_delta = stored_node_poc_weight - floor(stored_node_poc_weight * model_weight_scale_factor)
-weight_with_035_bug_fix = weight + stuck_035_weight_delta
+full_weight_with_035_bug_fix = weight + stuck_035_weight_delta
+weight_with_035_bug_fix = min(full_weight_with_035_bug_fix, confirmation_weight + stuck_035_weight_delta)
 ```
 
 Detection uses epoch `248` as the baseline and marks post-upgrade node weights

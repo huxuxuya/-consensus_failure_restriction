@@ -654,8 +654,12 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
             address = vw["member_address"]
             weight = max(0, to_int(vw.get("weight")))
             stuck_weight_delta = stuck_weight_deltas.get(epoch, {}).get(address, 0)
-            weight_with_035_bug_fix = weight + stuck_weight_delta
             confirmation_weight = max(0, to_int(vw.get("confirmation_weight")))
+            full_weight_with_035_bug_fix = weight + stuck_weight_delta
+            weight_with_035_bug_fix = min(
+                full_weight_with_035_bug_fix,
+                confirmation_weight + stuck_weight_delta,
+            )
             effective_weight = chain_effective_weights.get(address, 0)
             actual_reward = to_int(
                 performance_by_address.get(address, {}).get("rewarded_coins")
