@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import json
 import math
 import time
@@ -31,6 +32,10 @@ DEFAULT_CHAIN_DELTA_OUTPUT = (
 )
 DEFAULT_035_BUG_FIX_DELTA_OUTPUT = (
     "checks/case-4-epoch-loss-audit-245-255/035_bug_fix_expected_minus_actual_245_255.csv"
+)
+DEFAULT_035_BUG_FIX_EFFECTIVE_WEIGHT_DELTA_OUTPUT = (
+    "checks/case-4-epoch-loss-audit-245-255/"
+    "035_bug_fix_weight_minus_effective_weight_245_255.csv"
 )
 DEFAULT_INFERENCE_SLOT_WEIGHT_OUTPUT = (
     "checks/case-4-epoch-loss-audit-245-255/inference_slot_weight_245_255.csv"
@@ -74,7 +79,12 @@ def fetch_json(
             request = urllib.request.Request(url, headers=request_headers)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            json.JSONDecodeError,
+            http.client.IncompleteRead,
+        ) as exc:
             last_error = exc
             if attempt < retries:
                 time.sleep(0.5 * (attempt + 1))
@@ -1106,6 +1116,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_035_BUG_FIX_DELTA_OUTPUT,
     )
     parser.add_argument(
+        "--035-bug-fix-effective-weight-delta-output",
+        dest="bug_fix_035_effective_weight_delta_output",
+        default=DEFAULT_035_BUG_FIX_EFFECTIVE_WEIGHT_DELTA_OUTPUT,
+    )
+    parser.add_argument(
         "--inference-slot-weight-output",
         default=DEFAULT_INFERENCE_SLOT_WEIGHT_OUTPUT,
     )
@@ -1156,6 +1171,17 @@ def main() -> int:
         - Decimal(str(row["actual_reward_gnk"])),
     )
     write_csv(Path(args.bug_fix_035_delta_output), bug_fix_delta_rows)
+    bug_fix_effective_weight_delta_rows = weight_wide_rows(
+        long_rows,
+        args.from_epoch,
+        args.to_epoch,
+        "035_bug_fix_weight_minus_effective_weight",
+        lambda row: int(row["weight_with_035_bug_fix"]) - int(row["effective_weight"]),
+    )
+    write_csv(
+        Path(args.bug_fix_035_effective_weight_delta_output),
+        bug_fix_effective_weight_delta_rows,
+    )
     inference_slot_weight_rows = weight_wide_rows(
         long_rows,
         args.from_epoch,
@@ -1175,6 +1201,7 @@ def main() -> int:
     print(f"wrote {args.confirmation_plus_poc_slot_minus_effective_output}")
     print(f"wrote {args.chain_delta_output}")
     print(f"wrote {args.bug_fix_035_delta_output}")
+    print(f"wrote {args.bug_fix_035_effective_weight_delta_output}")
     print(f"wrote {args.inference_slot_weight_output}")
     print(f"wrote {args.preserved_event_weight_output}")
     if args.long_output:

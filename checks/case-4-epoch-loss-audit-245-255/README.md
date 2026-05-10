@@ -27,6 +27,7 @@ epoch_loss_audit_wide_245_255.csv
 confirmation_plus_poc_slot_minus_effective_reward_245_255.csv
 chain_expected_delta_245_255.csv
 035_bug_fix_expected_minus_actual_245_255.csv
+035_bug_fix_weight_minus_effective_weight_245_255.csv
 inference_slot_weight_245_255.csv
 preserved_event_weight_245_255.csv
 ```
@@ -78,6 +79,20 @@ One participant per row. Epoch columns contain:
 epoch_<N>_035_bug_fix_expected_minus_actual_gnk =
   epoch_<N>_expected_035_bug_fix_weight_reward_gnk
   - epoch_<N>_actual_reward_gnk
+```
+
+Zero values are written as empty cells.
+
+035_bug_fix_weight_minus_effective_weight_245_255.csv
+```
+
+One participant per row. Epoch columns compare the corrected diagnostic weight
+against the chain effective settlement weight:
+
+```text
+epoch_<N>_035_bug_fix_weight_minus_effective_weight =
+  epoch_<N>_weight_with_035_bug_fix
+  - epoch_<N>_effective_weight
 ```
 
 Zero values are written as empty cells.
