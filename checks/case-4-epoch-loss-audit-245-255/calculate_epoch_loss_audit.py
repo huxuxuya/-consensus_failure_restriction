@@ -392,6 +392,35 @@ def apply_power_capping(weights: dict[str, int]) -> dict[str, int]:
     return capped
 
 
+def model_raw_totals(
+    model_groups: list[dict[str, Any]],
+    coefficients: dict[str, Decimal],
+) -> dict[str, int]:
+    raw_totals: dict[str, int] = {}
+    for group in model_groups:
+        model_id = group.get("model_id", "")
+        for vw in group.get("validation_weights", []):
+            address = vw["member_address"]
+            raw_totals[address] = raw_totals.get(address, 0) + coefficient_adjusted_weight(
+                vw,
+                model_id,
+                coefficients,
+            )
+    return raw_totals
+
+
+def confirmation_scaled_weight(
+    weight: int,
+    confirmation_weight: int,
+    raw_total: int,
+) -> int:
+    if raw_total > 0 and weight < raw_total:
+        effective_weight = confirmation_weight * weight // raw_total
+    else:
+        effective_weight = confirmation_weight
+    return min(weight, max(0, effective_weight))
+
+
 def calculate_chain_rewards(
     epoch: int,
     root_group: dict[str, Any],
@@ -406,17 +435,7 @@ def calculate_chain_rewards(
 ) -> tuple[dict[str, int], dict[str, int]]:
     full_weights: dict[str, int] = {}
     effective_weights: dict[str, int] = {}
-    raw_totals: dict[str, int] = {}
-
-    for group in model_groups:
-        model_id = group.get("model_id", "")
-        for vw in group.get("validation_weights", []):
-            address = vw["member_address"]
-            raw_totals[address] = raw_totals.get(address, 0) + coefficient_adjusted_weight(
-                vw,
-                model_id,
-                coefficients,
-            )
+    raw_totals = model_raw_totals(model_groups, coefficients)
 
     for vw in root_group.get("validation_weights", []):
         address = vw["member_address"]
@@ -434,12 +453,11 @@ def calculate_chain_rewards(
             )
         else:
             confirmation_weight = max(0, to_int(vw.get("confirmation_weight")))
-            raw_total = raw_totals.get(address, 0)
-            if raw_total > 0 and weight < raw_total:
-                effective_weight = confirmation_weight * weight // raw_total
-            else:
-                effective_weight = confirmation_weight
-            effective_weight = min(weight, max(0, effective_weight))
+            effective_weight = confirmation_scaled_weight(
+                weight,
+                confirmation_weight,
+                raw_totals.get(address, 0),
+            )
         effective_weights[address] = effective_weight
 
     participant_weights = apply_power_capping(effective_weights)
@@ -647,6 +665,7 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
 
         total_epoch_weight = to_int(root_group["total_weight"])
         fixed_epoch_reward = calculate_fixed_epoch_reward(epoch, params)
+        raw_totals = model_raw_totals(model_groups, coefficients)
         expected_chain_rewards, chain_effective_weights = calculate_chain_rewards(
             epoch=epoch,
             root_group=root_group,
@@ -665,6 +684,7 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
             weight = max(0, to_int(vw.get("weight")))
             stuck_weight_delta = stuck_weight_deltas.get(epoch, {}).get(address, 0)
             confirmation_weight = max(0, to_int(vw.get("confirmation_weight")))
+            raw_total = raw_totals.get(address, 0)
             effective_weight = chain_effective_weights.get(address, 0)
             actual_reward = to_int(
                 performance_by_address.get(address, {}).get("rewarded_coins")
@@ -689,9 +709,11 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
                 )
             else:
                 full_weight_with_035_bug_fix = weight + stuck_weight_delta
-                weight_with_035_bug_fix = min(
+                raw_total_with_035_bug_fix = raw_total + stuck_weight_delta
+                weight_with_035_bug_fix = confirmation_scaled_weight(
                     full_weight_with_035_bug_fix,
                     confirmation_weight + stuck_weight_delta,
+                    raw_total_with_035_bug_fix,
                 )
             expected_035_bug_fix_weight = decimal_floor(
                 Decimal(weight_with_035_bug_fix)
@@ -722,6 +744,7 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
                     "epoch": epoch,
                     "address": address,
                     "weight": weight,
+                    "raw_total": raw_total,
                     "stuck_035_weight_delta": stuck_weight_delta,
                     "weight_with_035_bug_fix": weight_with_035_bug_fix,
                     "confirmation_weight": confirmation_weight,
@@ -920,6 +943,7 @@ def wide_rows(
                 wide.update(
                     {
                         f"{prefix}_weight": "",
+                        f"{prefix}_raw_total": "",
                         f"{prefix}_stuck_035_weight_delta": "",
                         f"{prefix}_weight_with_035_bug_fix": "",
                         f"{prefix}_confirmation_weight": "",
@@ -946,6 +970,7 @@ def wide_rows(
             wide.update(
                 {
                     f"{prefix}_weight": row["weight"],
+                    f"{prefix}_raw_total": row["raw_total"],
                     f"{prefix}_stuck_035_weight_delta": row["stuck_035_weight_delta"],
                     f"{prefix}_weight_with_035_bug_fix": row[
                         "weight_with_035_bug_fix"

@@ -151,6 +151,7 @@ total_lost_due_to_confirmation_weight_gnk
 epochs_with_zero_paid_positive_expected
 epochs_with_large_confirmation_loss
 epoch_<N>_weight
+epoch_<N>_raw_total
 epoch_<N>_stuck_035_weight_delta
 epoch_<N>_weight_with_035_bug_fix
 epoch_<N>_confirmation_weight
@@ -179,14 +180,25 @@ and fixed epoch reward divided by total full epoch weight.
 `weight_with_035_bug_fix` is diagnostic and confirmation-aware. For legacy
 `POC_SLOT` epochs before the stuck-weight window, it adds preserved slot weight
 to confirmation weight. For post-v0.2.12 stuck-weight epochs, it adds back the
-detected stale-preserved-node delta, capped by the corrected full weight:
+detected stale-preserved-node delta and then applies the same `raw_total`
+normalization used by the chain settlement effective-weight calculation:
 
 ```text
 legacy_weight_with_preserved = min(weight, confirmation_weight + poc_slot_weight)
 
 stuck_035_weight_delta = stored_node_poc_weight - floor(stored_node_poc_weight * model_weight_scale_factor)
 full_weight_with_035_bug_fix = weight + stuck_035_weight_delta
-weight_with_035_bug_fix = min(full_weight_with_035_bug_fix, confirmation_weight + stuck_035_weight_delta)
+raw_total_with_035_bug_fix = raw_total + stuck_035_weight_delta
+
+if full_weight_with_035_bug_fix < raw_total_with_035_bug_fix:
+  weight_with_035_bug_fix =
+    floor((confirmation_weight + stuck_035_weight_delta)
+      * full_weight_with_035_bug_fix
+      / raw_total_with_035_bug_fix)
+else:
+  weight_with_035_bug_fix = confirmation_weight + stuck_035_weight_delta
+
+weight_with_035_bug_fix = min(full_weight_with_035_bug_fix, max(0, weight_with_035_bug_fix))
 ```
 
 Detection uses epoch `248` as the baseline and marks post-upgrade node weights
