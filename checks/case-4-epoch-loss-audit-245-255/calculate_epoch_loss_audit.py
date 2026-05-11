@@ -710,9 +710,12 @@ def calculate(args: argparse.Namespace) -> list[dict[str, Any]]:
             else:
                 full_weight_with_035_bug_fix = weight + stuck_weight_delta
                 raw_total_with_035_bug_fix = raw_total + stuck_weight_delta
+                diagnostic_confirmation_weight = (
+                    confirmation_weight if confirmation_weight > 0 else raw_total
+                )
                 weight_with_035_bug_fix = confirmation_scaled_weight(
                     full_weight_with_035_bug_fix,
-                    confirmation_weight + stuck_weight_delta,
+                    diagnostic_confirmation_weight + stuck_weight_delta,
                     raw_total_with_035_bug_fix,
                 )
             expected_035_bug_fix_weight = decimal_floor(

@@ -189,14 +189,18 @@ legacy_weight_with_preserved = min(weight, confirmation_weight + poc_slot_weight
 stuck_035_weight_delta = stored_node_poc_weight - floor(stored_node_poc_weight * model_weight_scale_factor)
 full_weight_with_035_bug_fix = weight + stuck_035_weight_delta
 raw_total_with_035_bug_fix = raw_total + stuck_035_weight_delta
+diagnostic_confirmation_weight = confirmation_weight
+
+if diagnostic_confirmation_weight == 0:
+  diagnostic_confirmation_weight = raw_total
 
 if full_weight_with_035_bug_fix < raw_total_with_035_bug_fix:
   weight_with_035_bug_fix =
-    floor((confirmation_weight + stuck_035_weight_delta)
+    floor((diagnostic_confirmation_weight + stuck_035_weight_delta)
       * full_weight_with_035_bug_fix
       / raw_total_with_035_bug_fix)
 else:
-  weight_with_035_bug_fix = confirmation_weight + stuck_035_weight_delta
+  weight_with_035_bug_fix = diagnostic_confirmation_weight + stuck_035_weight_delta
 
 weight_with_035_bug_fix = min(full_weight_with_035_bug_fix, max(0, weight_with_035_bug_fix))
 ```
