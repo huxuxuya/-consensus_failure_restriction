@@ -69,9 +69,20 @@ Reward inputs:
 
 | Epoch | Fixed epoch reward | Root total epoch weight | Reward rate, base units per weight |
 | ---: | ---: | ---: | ---: |
+| `248` | `287242.648359423 GNK` | `858277` | `334673594.14201126209836684427055600930701859656032` |
 | `249` | `287106.240500883 GNK` | `740094` | `387932128.21733860833894072915062140755093271935727` |
 
-Final compensation table:
+Excluded from this package:
+
+Epoch `248` rows are shown for traceability, but they are not included in this
+package because epoch `248` will be fully covered by Compensation #1.
+
+| Address | Lost epoch | Exclusion reason | Weight | Confirmation weight | Effective weight | Expected GNK | Actual GNK | This package GNK |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `gonka12av9up884t9lcsf70rs0l7jfmkmc8k9sxfuknt` | `248` | `consecutive_failures` | `135385` | `116900` | `116900` | `39123.343155201` | `0` | `0` |
+| `gonka1dzdmx5ljrwkelrmgd7suv2q43epn293qacpgqn` | `248` | `statistical_invalidations` | `15009` | `0` | `0` | `0` | `0` | `0` |
+
+Final compensation table for this package:
 
 | Address | Lost epoch | Exclusion reason | Weight | Confirmation weight | Effective weight | Expected GNK | Actual GNK | Compensation GNK |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
