@@ -1,117 +1,97 @@
 # Consecutive Failure Compensation
 
-This repository calculates compensation for a Gonka bug where hosts invalidated
-with `consecutive_failure` could remain blocked because the invalidation state
-was not reset correctly.
+This repository calculates compensation for a Gonka chain bug where participants
+marked invalid by `consecutive_failures` / related invalidation could remain
+blocked across epochs instead of returning to normal reward eligibility.
 
-## Policy
+## Scope
 
-- Scan epochs `220-249`.
-- Do not compensate epochs `250+` because the issue was already known.
-- Discover strict affected candidates as current chain participants with
+- Checked epochs: `220-249`.
+- Epochs `250+` are excluded by policy because the issue was already known.
+- Affected candidates are discovered from current chain participants with
   `status = INVALID`.
-- Compensate only the first unpaid epoch after the last paid epoch.
-- Pay nothing when the lost epoch has zero reward-eligible weight.
+- For each affected candidate, all unpaid invalidation epochs after the last
+  paid epoch are considered until the policy cutoff.
+- Epoch `248` is excluded from this package because it will be fully covered by
+  Compensation #1. This package only pays the carried invalidation into epoch
+  `249`.
+- If the lost epoch has zero reward-eligible effective weight, compensation is
+  `0`.
 
 ## Run
 
 ```bash
 python3 scripts/calculate_compensation.py \
+  --compensate-from-epoch 249 \
   --affected-output artifacts/affected_participants.csv \
   --audit-output artifacts/paid_then_unpaid_audit.csv \
+  --invalid-status-output artifacts/invalid_status_by_epoch.csv \
   --output artifacts/compensation_calculation.csv
 ```
 
-Default source:
+Default chain API:
 
 ```text
 http://node1.gonka.ai:8000
 ```
 
-## Outputs
+## Calculation
 
-`artifacts/affected_participants.csv`
-
-Strict affected candidates used for compensation discovery.
-
-`artifacts/paid_then_unpaid_audit.csv`
-
-Broad audit list of every participant with a paid epoch followed by an unpaid
-epoch before the cutoff. This file is for review only; most rows are normal
-churn, inactive hosts, or zero-weight cases.
-
-`artifacts/compensation_calculation.csv`
-
-Final compensation calculation with all payout inputs.
-
-## Formula
-
-For each lost epoch:
+The script reproduces the chain reward settlement logic for the lost epoch:
 
 ```text
-effective_weight = min(weight, confirmation_weight)
-reward_rate = fixed_epoch_reward / total_epoch_weight
-expected_reward = floor(effective_weight * reward_rate)
-compensation = max(0, expected_reward - actual_rewarded_coins)
+expected_reward =
+  floor(effective_weight * fixed_epoch_reward / root_total_epoch_weight)
+
+compensation =
+  max(0, expected_reward - actual_rewarded_coins)
 ```
 
-## Current Result
+`effective_weight` is calculated with the chain rules used for epoch rewards:
+exclusion handling, confirmation weight, model/raw-weight scaling, power
+capping, downtime punishment, and fixed epoch reward divided by root epoch
+total weight.
 
-Checked epochs: `220-249` (`30` epochs).
+## Result
 
-Current chain participants checked: `6739`.
-
-Current participant statuses:
-
-| Status | Count |
-| --- | ---: |
-| `ACTIVE` | `4635` |
-| `INACTIVE` | `1180` |
-| `RAMPING` | `921` |
-| `INVALID` | `3` |
-
-Broad paid-then-unpaid audit rows: `370`.
-
-Broad audit by current status:
-
-| Status | Count |
-| --- | ---: |
-| `INACTIVE` | `322` |
-| `ACTIVE` | `45` |
-| `INVALID` | `3` |
-
-Strict affected candidates: `3`.
-
-Compensation rows: `3`.
-
-Rows with positive compensation: `1`.
-
-Compensated epoch: `248`.
-
-Epoch `248` reward-rate inputs:
-
-| Metric | Value |
-| --- | ---: |
-| Fixed epoch reward, GNK | `287242.648359423` |
-| Total epoch weight | `858277` |
-| Reward rate, base units per weight | `334673594.14201126` |
-
-| Address | Last paid | Lost epoch | Weight | Confirmation weight | Effective weight | Reward rate | Expected GNK | Actual GNK | Compensation GNK |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `gonka12av9up884t9lcsf70rs0l7jfmkmc8k9sxfuknt` | `247` | `248` | `135385` | `116900` | `116900` | `334673594.14201126` | `39123.343155201` | `0` | `39123.343155201` |
-| `gonka188c86f9mrlt4nlcg89f82nnfm9jzq9gtjafj50` | `247` | `248` | `3887` | `0` | `0` | `334673594.14201126` | `0` | `0` | `0` |
-| `` | `247` | `248` | `15009` | `0` | `0` | `334673594.14201126` | `0` | `0` | `0` |
-gonka1dzdmx5ljrwkelrmgd7suv2q43epn293qacpgqn
-Total compensation:
+Latest run result:
 
 ```text
-39123.343155201 GNK
+affected candidates: 3
+compensated epoch: 249
+compensation rows: 3
+positive compensation rows: 3
+recipient addresses: 3
+total compensation: 63391.601139865 GNK
 ```
 
-## Notes
+Reward inputs:
 
-The script fetches data from chain API on every run and fails on invalid JSON
-instead of silently skipping epochs. Reward distribution follows Gonka
-`bitcoin_rewards.go`: rewards are proportional to effective participant weight,
-divided by total epoch weight. Undistributed shares go to governance, not to the
-remaining participants.
+| Epoch | Fixed epoch reward | Root total epoch weight | Reward rate, base units per weight |
+| ---: | ---: | ---: | ---: |
+| `249` | `287106.240500883 GNK` | `740094` | `387932128.21733860833894072915062140755093271935727` |
+
+Final compensation table:
+
+| Address | Lost epoch | Exclusion reason | Weight | Confirmation weight | Effective weight | Expected GNK | Actual GNK | Compensation GNK |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `gonka12av9up884t9lcsf70rs0l7jfmkmc8k9sxfuknt` | `249` | `consecutive_failures` | `126217` | `123902` | `123902` | `48065.566550384` | `0` | `48065.566550384` |
+| `gonka188c86f9mrlt4nlcg89f82nnfm9jzq9gtjafj50` | `249` | `consecutive_failures` | `24278` | `24278` | `24278` | `9418.21620886` | `0` | `9418.21620886` |
+| `gonka1dzdmx5ljrwkelrmgd7suv2q43epn293qacpgqn` | `249` | `consecutive_failures` | `15678` | `15229` | `15229` | `5907.818380621` | `0` | `5907.818380621` |
+
+Recipients:
+
+| Address | Compensation GNK |
+| --- | ---: |
+| `gonka12av9up884t9lcsf70rs0l7jfmkmc8k9sxfuknt` | `48065.566550384` |
+| `gonka188c86f9mrlt4nlcg89f82nnfm9jzq9gtjafj50` | `9418.21620886` |
+| `gonka1dzdmx5ljrwkelrmgd7suv2q43epn293qacpgqn` | `5907.818380621` |
+
+## Output Files
+
+- `artifacts/affected_participants.csv`: strict affected candidates.
+- `artifacts/compensation_calculation.csv`: final payout calculation.
+- `artifacts/paid_then_unpaid_audit.csv`: broad review-only audit of paid then
+  unpaid participants.
+- `artifacts/invalid_status_by_epoch.csv`: invalid status marker by participant
+  and epoch.

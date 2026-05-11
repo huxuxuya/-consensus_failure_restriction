@@ -22,6 +22,7 @@ getcontext().prec = 50
 DEFAULT_NODE_URL = "http://node1.gonka.ai:8000"
 DEFAULT_SCAN_FROM_EPOCH = 220
 DEFAULT_EXCLUDE_FROM_EPOCH = 250
+DEFAULT_COMPENSATE_FROM_EPOCH = 249
 DEFAULT_OUTPUT = "artifacts/compensation_calculation.csv"
 DEFAULT_AFFECTED_OUTPUT = "artifacts/affected_participants.csv"
 DEFAULT_AUDIT_OUTPUT = "artifacts/paid_then_unpaid_audit.csv"
@@ -457,12 +458,14 @@ def discover_invalid_participants(
     )
 
 
-def find_lost_epoch(
+def find_compensable_epochs(
     address: str,
     performance_by_epoch: dict[int, dict[str, dict[str, Any]]],
+    exclusion_reasons_by_epoch: dict[int, dict[str, str]],
     scan_from_epoch: int,
+    compensate_from_epoch: int,
     exclude_from_epoch: int,
-) -> tuple[int | None, int | None]:
+) -> tuple[int | None, list[int]]:
     paid_epochs: list[int] = []
     participant_epochs: list[int] = []
 
@@ -475,33 +478,42 @@ def find_lost_epoch(
             paid_epochs.append(epoch)
 
     if not paid_epochs:
-        return None, None
+        return None, []
 
     last_paid_epoch = max(paid_epochs)
+    compensable_epochs: list[int] = []
     for epoch in participant_epochs:
-        if epoch > last_paid_epoch:
+        if epoch > last_paid_epoch and epoch >= compensate_from_epoch:
             performance = performance_by_epoch[epoch][address]
-            if to_int(performance.get("rewarded_coins")) == 0:
-                return last_paid_epoch, epoch
+            reason = exclusion_reasons_by_epoch.get(epoch, {}).get(address, "")
+            if (
+                to_int(performance.get("rewarded_coins")) == 0
+                and reason in INVALID_EXCLUSION_REASONS
+            ):
+                compensable_epochs.append(epoch)
 
-    return last_paid_epoch, None
+    return last_paid_epoch, compensable_epochs
 
 
 def build_affected_rows(
     addresses: list[str],
     participants: dict[str, dict[str, Any]],
     performance_by_epoch: dict[int, dict[str, dict[str, Any]]],
+    exclusion_reasons_by_epoch: dict[int, dict[str, str]],
     scan_from_epoch: int,
+    compensate_from_epoch: int,
     exclude_from_epoch: int,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
     for address in addresses:
         participant = participants.get(address, {})
-        last_paid_epoch, first_unpaid_epoch = find_lost_epoch(
+        last_paid_epoch, compensable_epochs = find_compensable_epochs(
             address,
             performance_by_epoch,
+            exclusion_reasons_by_epoch,
             scan_from_epoch,
+            compensate_from_epoch,
             exclude_from_epoch,
         )
         performance_epochs = [
@@ -521,6 +533,7 @@ def build_affected_rows(
                 "join_height": participant.get("join_height", ""),
                 "epochs_completed": participant.get("epochs_completed", ""),
                 "scan_from_epoch": scan_from_epoch,
+                "compensate_from_epoch_policy": compensate_from_epoch,
                 "exclude_from_epoch_policy": exclude_from_epoch,
                 "first_seen_performance_epoch": min(performance_epochs)
                 if performance_epochs
@@ -529,10 +542,11 @@ def build_affected_rows(
                 if performance_epochs
                 else "",
                 "last_paid_epoch": last_paid_epoch if last_paid_epoch is not None else "",
-                "first_unpaid_epoch_after_last_paid": first_unpaid_epoch
-                if first_unpaid_epoch is not None
+                "first_unpaid_epoch_after_last_paid": compensable_epochs[0]
+                if compensable_epochs
                 else "",
-                "included_for_compensation": bool(first_unpaid_epoch is not None),
+                "compensable_epochs": ",".join(str(epoch) for epoch in compensable_epochs),
+                "included_for_compensation": bool(compensable_epochs),
             }
         )
 
@@ -654,6 +668,7 @@ def build_rows(
     participants: dict[str, dict[str, Any]],
     weights_by_epoch: dict[int, dict[str, dict[str, int]]],
     performance_by_epoch: dict[int, dict[str, dict[str, Any]]],
+    exclusion_reasons_by_epoch: dict[int, dict[str, str]],
     exclude_from_epoch: int,
     reward_rates_by_epoch: dict[int, tuple[int, int, Decimal]],
     chain_reward_weights_by_epoch: dict[int, dict[str, int]],
@@ -662,64 +677,76 @@ def build_rows(
 
     for affected in affected_rows:
         address = str(affected["address"])
-        lost_epoch_value = affected["first_unpaid_epoch_after_last_paid"]
-        if lost_epoch_value == "":
-            continue
-        lost_epoch = int(lost_epoch_value)
-        if lost_epoch >= exclude_from_epoch:
-            continue
-
-        participant = participants.get(address, {})
-        weights_by_address = weights_by_epoch.get(lost_epoch, {})
-        weight_info = weights_by_address.get(
-            address,
-            {"weight": 0, "confirmation_weight": 0, "effective_weight": 0},
-        )
-        performance = performance_by_epoch.get(lost_epoch, {}).get(address, {})
-        fixed_epoch_reward, total_epoch_weight, reward_rate = reward_rates_by_epoch[
-            lost_epoch
+        compensable_epoch_values = [
+            int(epoch)
+            for epoch in str(affected.get("compensable_epochs", "")).split(",")
+            if epoch
         ]
+        if not compensable_epoch_values:
+            continue
 
-        effective_weight = chain_reward_weights_by_epoch.get(lost_epoch, {}).get(
-            address,
-            weight_info["effective_weight"],
-        )
-        expected_reward = decimal_floor(Decimal(effective_weight) * reward_rate)
-        actual_reward = to_int(performance.get("rewarded_coins"))
-        compensation = max(0, expected_reward - actual_reward)
+        for lost_epoch in compensable_epoch_values:
+            if lost_epoch >= exclude_from_epoch:
+                continue
 
-        rows.append(
-            {
-                "address": address,
-                "lost_epoch": lost_epoch,
-                "excluded_from_epoch_policy": exclude_from_epoch,
-                "last_paid_epoch": affected["last_paid_epoch"],
-                "current_status": participant.get("status", ""),
-                "consecutive_invalid_inferences": participant.get(
-                    "consecutive_invalid_inferences",
-                    "",
-                ),
-                "join_height": participant.get("join_height", ""),
-                "epochs_completed": participant.get("epochs_completed", ""),
-                "weight": weight_info["weight"],
-                "confirmation_weight": weight_info["confirmation_weight"],
-                "effective_weight": effective_weight,
-                "fixed_epoch_reward_for_rate": fixed_epoch_reward,
-                "total_epoch_weight_for_rate": total_epoch_weight,
-                "reward_rate_base_units_per_weight": str(reward_rate),
-                "inference_count": to_int(performance.get("inference_count")),
-                "missed_requests": to_int(performance.get("missed_requests")),
-                "earned_coins": to_int(performance.get("earned_coins")),
-                "actual_rewarded_coins": actual_reward,
-                "burned_coins": to_int(performance.get("burned_coins")),
-                "validated_inferences": to_int(performance.get("validated_inferences")),
-                "invalidated_inferences": to_int(performance.get("invalidated_inferences")),
-                "claimed": performance.get("claimed", ""),
-                "expected_reward_base_units": expected_reward,
-                "compensation_base_units": compensation,
-                "compensation_gnk": str(Decimal(compensation) / Decimal(1_000_000_000)),
-            }
-        )
+            participant = participants.get(address, {})
+            weights_by_address = weights_by_epoch.get(lost_epoch, {})
+            weight_info = weights_by_address.get(
+                address,
+                {"weight": 0, "confirmation_weight": 0, "effective_weight": 0},
+            )
+            performance = performance_by_epoch.get(lost_epoch, {}).get(address, {})
+            fixed_epoch_reward, total_epoch_weight, reward_rate = reward_rates_by_epoch[
+                lost_epoch
+            ]
+
+            effective_weight = chain_reward_weights_by_epoch.get(lost_epoch, {}).get(
+                address,
+                weight_info["effective_weight"],
+            )
+            expected_reward = decimal_floor(Decimal(effective_weight) * reward_rate)
+            actual_reward = to_int(performance.get("rewarded_coins"))
+            compensation = max(0, expected_reward - actual_reward)
+            exclusion_reason = exclusion_reasons_by_epoch.get(lost_epoch, {}).get(
+                address,
+                "",
+            )
+
+            rows.append(
+                {
+                    "address": address,
+                    "lost_epoch": lost_epoch,
+                    "excluded_from_epoch_policy": exclude_from_epoch,
+                    "last_paid_epoch": affected["last_paid_epoch"],
+                    "current_status": participant.get("status", ""),
+                    "exclusion_reason": exclusion_reason,
+                    "consecutive_invalid_inferences": participant.get(
+                        "consecutive_invalid_inferences",
+                        "",
+                    ),
+                    "join_height": participant.get("join_height", ""),
+                    "epochs_completed": participant.get("epochs_completed", ""),
+                    "weight": weight_info["weight"],
+                    "confirmation_weight": weight_info["confirmation_weight"],
+                    "effective_weight": effective_weight,
+                    "fixed_epoch_reward_for_rate": fixed_epoch_reward,
+                    "total_epoch_weight_for_rate": total_epoch_weight,
+                    "reward_rate_base_units_per_weight": str(reward_rate),
+                    "inference_count": to_int(performance.get("inference_count")),
+                    "missed_requests": to_int(performance.get("missed_requests")),
+                    "earned_coins": to_int(performance.get("earned_coins")),
+                    "actual_rewarded_coins": actual_reward,
+                    "burned_coins": to_int(performance.get("burned_coins")),
+                    "validated_inferences": to_int(performance.get("validated_inferences")),
+                    "invalidated_inferences": to_int(performance.get("invalidated_inferences")),
+                    "claimed": performance.get("claimed", ""),
+                    "expected_reward_base_units": expected_reward,
+                    "compensation_base_units": compensation,
+                    "compensation_gnk": str(
+                        Decimal(compensation) / Decimal(1_000_000_000)
+                    ),
+                }
+            )
 
     return rows
 
@@ -741,6 +768,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--node-url", default=DEFAULT_NODE_URL)
     parser.add_argument("--scan-from-epoch", type=int, default=DEFAULT_SCAN_FROM_EPOCH)
+    parser.add_argument(
+        "--compensate-from-epoch",
+        type=int,
+        default=DEFAULT_COMPENSATE_FROM_EPOCH,
+        help=(
+            "First epoch eligible for this compensation. Earlier epochs are "
+            "handled by another compensation package."
+        ),
+    )
     parser.add_argument(
         "--exclude-from-epoch",
         type=int,
@@ -777,6 +813,13 @@ def main() -> int:
         print(
             f"error: scan start {args.scan_from_epoch} is not before policy cutoff "
             f"{args.exclude_from_epoch}",
+            file=sys.stderr,
+        )
+        return 2
+    if args.compensate_from_epoch >= args.exclude_from_epoch:
+        print(
+            f"error: compensate-from epoch {args.compensate_from_epoch} is not "
+            f"before policy cutoff {args.exclude_from_epoch}",
             file=sys.stderr,
         )
         return 2
@@ -830,7 +873,9 @@ def main() -> int:
         addresses=addresses,
         participants=participants_by_address,
         performance_by_epoch=performance_by_epoch,
+        exclusion_reasons_by_epoch=exclusion_reasons_by_epoch,
         scan_from_epoch=args.scan_from_epoch,
+        compensate_from_epoch=args.compensate_from_epoch,
         exclude_from_epoch=args.exclude_from_epoch,
     )
     audit_rows = build_paid_then_unpaid_audit_rows(
@@ -855,9 +900,10 @@ def main() -> int:
 
     lost_epochs = sorted(
         {
-            int(row["first_unpaid_epoch_after_last_paid"])
+            int(epoch)
             for row in affected_rows
-            if row["first_unpaid_epoch_after_last_paid"] != ""
+            for epoch in str(row.get("compensable_epochs", "")).split(",")
+            if epoch
         }
     )
 
@@ -907,7 +953,12 @@ def main() -> int:
             retries=args.retries,
         )
         for row in affected_rows:
-            if row["first_unpaid_epoch_after_last_paid"] == epoch:
+            compensable_epochs = {
+                int(value)
+                for value in str(row.get("compensable_epochs", "")).split(",")
+                if value
+            }
+            if epoch in compensable_epochs:
                 address = str(row["address"])
                 per_address_weights = calculate_chain_reward_weights(
                     epoch=epoch,
@@ -930,6 +981,7 @@ def main() -> int:
         participants=participants_by_address,
         weights_by_epoch=weights_by_epoch,
         performance_by_epoch=performance_by_epoch,
+        exclusion_reasons_by_epoch=exclusion_reasons_by_epoch,
         exclude_from_epoch=args.exclude_from_epoch,
         reward_rates_by_epoch=reward_rates_by_epoch,
         chain_reward_weights_by_epoch=chain_reward_weights_by_epoch,
