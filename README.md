@@ -86,7 +86,7 @@ package because epoch `248` will be fully covered by Compensation #1.
 Final compensation table for this package:
 
 | Address | Lost epoch | Exclusion reason | Weight | Confirmation weight | Effective weight | Expected GNK | Actual GNK | Compensation GNK | Comment |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `gonka12av9up884t9lcsf70rs0l7jfmkmc8k9sxfuknt` | `249` | `consecutive_failures` | `126217` | `123902` | `123902` | `48065.566550384` | `0` | `48065.566550384` | compensated |
 | `gonka12av9up884t9lcsf70rs0l7jfmkmc8k9sxfuknt` | `250` | `consecutive_failures` | `906` | `902` | `902` | `326.796706204` | `0` | `0` | not compensated in this package (post-fix tail, no validated inferences) |
 | `gonka188c86f9mrlt4nlcg89f82nnfm9jzq9gtjafj50` | `249` | `consecutive_failures` | `24278` | `24278` | `24278` | `9418.21620886` | `0` | `9418.21620886` | compensated |
